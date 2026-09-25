@@ -30,15 +30,18 @@ type StreamInfo = {
   thumbnail: string;
 };
 
+type DrawnWinner = Entrant & { prize: string };
+
 type Audit = {
   startedAt: string;
   closedAt: string;
   keyword: string;
   eligibleCount: number;
-  winnerName: string;
-  winnerChannelId: string;
+  winners: Array<{ name: string; channelId: string; prize: string }>;
   drawnAt: string;
 };
+
+const DEFAULT_PRIZE = "1 month of ChatGPT Plus or Cursor Pro";
 
 function formatCountdown(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000));
@@ -66,6 +69,8 @@ export default function GiveawayApp() {
   const [apiKey, setApiKey] = useState("");
   const [url, setUrl] = useState("");
   const [keyword, setKeyword] = useState("BUILD50");
+  const [winnerCount, setWinnerCount] = useState(1);
+  const [prizes, setPrizes] = useState<string[]>([DEFAULT_PRIZE]);
   const [durationMode, setDurationMode] = useState<DurationMode>(300);
   const [phase, setPhase] = useState<Phase>("setup");
   const [stream, setStream] = useState<StreamInfo | null>(null);
@@ -75,7 +80,7 @@ export default function GiveawayApp() {
   const [entrants, setEntrants] = useState<Entrant[]>([]);
   const [frozenEntrants, setFrozenEntrants] = useState<Entrant[]>([]);
   const [previousWinners, setPreviousWinners] = useState<Entrant[]>([]);
-  const [winner, setWinner] = useState<Entrant | null>(null);
+  const [winners, setWinners] = useState<DrawnWinner[]>([]);
   const [shuffleName, setShuffleName] = useState<string | null>(null);
   const [audit, setAudit] = useState<Audit | null>(null);
 
@@ -273,10 +278,30 @@ export default function GiveawayApp() {
 
   const eligiblePool = useMemo(() => {
     const excluded = new Set(previousWinners.map((w) => w.channelId));
-    if (winner) excluded.add(winner.channelId);
+    for (const w of winners) excluded.add(w.channelId);
     const source = frozenEntrants.length ? frozenEntrants : entrants;
     return source.filter((e) => !excluded.has(e.channelId));
-  }, [frozenEntrants, entrants, previousWinners, winner]);
+  }, [frozenEntrants, entrants, previousWinners, winners]);
+
+  function syncWinnerCount(n: number) {
+    const next = Math.max(1, Math.min(50, Math.floor(n) || 1));
+    setWinnerCount(next);
+    setPrizes((prev) => {
+      if (prev.length === next) return prev;
+      if (prev.length < next) {
+        const filled = [...prev];
+        while (filled.length < next) {
+          filled.push(prev[prev.length - 1] || DEFAULT_PRIZE);
+        }
+        return filled;
+      }
+      return prev.slice(0, next);
+    });
+  }
+
+  function updatePrize(index: number, value: string) {
+    setPrizes((prev) => prev.map((p, i) => (i === index ? value : p)));
+  }
 
   async function connectStream() {
     if (!apiKey.trim()) {
@@ -313,7 +338,7 @@ export default function GiveawayApp() {
     setEntrants([]);
     setFrozenEntrants([]);
     setPreviousWinners([]);
-    setWinner(null);
+    setWinners([]);
     setShuffleName(null);
     setAudit(null);
     setClaimStartedAt(null);
@@ -343,15 +368,17 @@ export default function GiveawayApp() {
 
   async function pickWinner(excludeCurrent = false) {
     const excluded = new Set(previousWinners.map((w) => w.channelId));
-    if (excludeCurrent && winner) {
-      excluded.add(winner.channelId);
+    if (excludeCurrent) {
+      for (const w of winners) excluded.add(w.channelId);
     }
 
     const pool = (frozenEntrants.length ? frozenEntrants : entrants).filter(
       (e) => !excluded.has(e.channelId)
     );
 
-    if (pool.length === 0) {
+    const pick = Math.min(winnerCount, pool.length);
+
+    if (pool.length === 0 || pick < 1) {
       setError(
         excludeCurrent
           ? "No remaining eligible entrants for a redraw."
@@ -360,38 +387,57 @@ export default function GiveawayApp() {
       return;
     }
 
-    setError(null);
+    if (pick < winnerCount) {
+      setError(
+        `Only ${pool.length} eligible entrant${pool.length === 1 ? "" : "s"} left — drawing ${pick}.`
+      );
+    } else {
+      setError(null);
+    }
+
     setPhase("drawing");
     setClaimStartedAt(null);
     setClaimEnded(false);
 
-    let selectedIndex = 0;
+    let selectedIndices: number[] = [];
     let drawnAt = new Date().toISOString();
     try {
       const res = await fetch("/api/draw", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: pool.length }),
+        body: JSON.stringify({ count: pool.length, pick }),
       });
       const data = await res.json();
-      if (res.ok && typeof data.index === "number") {
-        selectedIndex = data.index;
+      if (res.ok && Array.isArray(data.indices) && data.indices.length === pick) {
+        selectedIndices = data.indices;
         drawnAt = data.drawnAt || drawnAt;
-      } else {
-        // Fallback: Web Crypto if draw API fails
-        const buf = new Uint32Array(1);
-        crypto.getRandomValues(buf);
-        selectedIndex = buf[0] % pool.length;
+      } else if (res.ok && typeof data.index === "number") {
+        selectedIndices = [data.index];
+        drawnAt = data.drawnAt || drawnAt;
       }
     } catch {
-      const buf = new Uint32Array(1);
-      crypto.getRandomValues(buf);
-      selectedIndex = buf[0] % pool.length;
+      /* fallback below */
     }
 
-    const selected = pool[selectedIndex];
+    if (selectedIndices.length !== pick) {
+      // Web Crypto fallback — unique indices
+      const remaining = Array.from({ length: pool.length }, (_, i) => i);
+      selectedIndices = [];
+      for (let i = 0; i < pick; i++) {
+        const buf = new Uint32Array(1);
+        crypto.getRandomValues(buf);
+        const j = buf[0] % remaining.length;
+        selectedIndices.push(remaining[j]);
+        remaining.splice(j, 1);
+      }
+    }
 
-    // Suspense animation — does NOT determine the winner
+    const selected = selectedIndices.map((idx, i) => ({
+      ...pool[idx],
+      prize: (prizes[i] || prizes[prizes.length - 1] || DEFAULT_PRIZE).trim() || DEFAULT_PRIZE,
+    }));
+
+    // Suspense animation — does NOT determine the winners
     const names = pool.map((e) => e.displayName);
     const shuffleDuration = 2800;
     const start = Date.now();
@@ -403,26 +449,29 @@ export default function GiveawayApp() {
           resolve();
           return;
         }
-        setShuffleName(names[Math.floor(Math.random() * names.length)] || selected.displayName);
+        setShuffleName(names[Math.floor(Math.random() * names.length)] || selected[0].displayName);
         const delay = elapsed < 1200 ? 60 : elapsed < 2000 ? 110 : 180;
         setTimeout(tick, delay);
       };
       tick();
     });
 
-    if (excludeCurrent && winner) {
-      setPreviousWinners((prev) => [...prev, winner]);
+    if (excludeCurrent && winners.length) {
+      setPreviousWinners((prev) => [...prev, ...winners]);
     }
 
-    setWinner(selected);
+    setWinners(selected);
     setPhase("winner");
     setAudit({
       startedAt: startedAt || "",
       closedAt: closedAt || new Date().toISOString(),
       keyword,
-      eligibleCount: pool.length + (excludeCurrent && winner ? 1 : 0),
-      winnerName: selected.displayName,
-      winnerChannelId: selected.channelId,
+      eligibleCount: pool.length + (excludeCurrent ? winners.length : 0),
+      winners: selected.map((w) => ({
+        name: w.displayName,
+        channelId: w.channelId,
+        prize: w.prize,
+      })),
       drawnAt,
     });
   }
@@ -440,7 +489,7 @@ export default function GiveawayApp() {
     setEntrants([]);
     setFrozenEntrants([]);
     setPreviousWinners([]);
-    setWinner(null);
+    setWinners([]);
     setShuffleName(null);
     setAudit(null);
     setStartedAt(null);
@@ -607,6 +656,61 @@ export default function GiveawayApp() {
 
               <section className="rounded-2xl border border-white/10 bg-[#111114]/90 p-5">
                 <h2 className="mb-3 text-xs font-semibold tracking-[0.2em] text-zinc-500 uppercase">
+                  Winners per draw
+                </h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={phase === "open" || phase === "drawing"}
+                    onClick={() => syncWinnerCount(winnerCount - 1)}
+                    className="h-10 w-10 rounded-lg border border-white/10 text-lg text-zinc-300 hover:bg-white/5 disabled:opacity-40"
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={winnerCount}
+                    disabled={phase === "open" || phase === "drawing"}
+                    onChange={(e) => syncWinnerCount(Number(e.target.value))}
+                    className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 text-center font-mono text-lg text-zinc-100 outline-none focus:border-cyan-400/50 disabled:opacity-40"
+                  />
+                  <button
+                    type="button"
+                    disabled={phase === "open" || phase === "drawing"}
+                    onClick={() => syncWinnerCount(winnerCount + 1)}
+                    className="h-10 w-10 rounded-lg border border-white/10 text-lg text-zinc-300 hover:bg-white/5 disabled:opacity-40"
+                  >
+                    +
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-white/10 bg-[#111114]/90 p-5">
+                <h2 className="mb-3 text-xs font-semibold tracking-[0.2em] text-zinc-500 uppercase">
+                  Prizes
+                </h2>
+                <div className="space-y-2">
+                  {prizes.map((prize, i) => (
+                    <div key={i}>
+                      <label className="mb-1 block font-mono text-[10px] tracking-wider text-zinc-600 uppercase">
+                        Winner {i + 1}
+                      </label>
+                      <input
+                        value={prize}
+                        onChange={(e) => updatePrize(i, e.target.value)}
+                        disabled={phase === "drawing"}
+                        placeholder={DEFAULT_PRIZE}
+                        className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-cyan-400/50 disabled:opacity-40"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-white/10 bg-[#111114]/90 p-5">
+                <h2 className="mb-3 text-xs font-semibold tracking-[0.2em] text-zinc-500 uppercase">
                   Duration
                 </h2>
                 <div className="flex flex-wrap gap-2">
@@ -656,16 +760,16 @@ export default function GiveawayApp() {
                     Close Entries
                   </button>
                 )}
-                {(phase === "closed" || (phase === "winner" && !winner)) && (
+                {(phase === "closed" || (phase === "winner" && winners.length === 0)) && (
                   <button
                     type="button"
                     onClick={() => void pickWinner(false)}
                     className="w-full rounded-xl bg-emerald-400 px-4 py-3 text-sm font-bold tracking-wide text-zinc-950 transition hover:bg-emerald-300"
                   >
-                    Pick Winner
+                    {winnerCount > 1 ? `Pick ${winnerCount} Winners` : "Pick Winner"}
                   </button>
                 )}
-                {phase === "winner" && winner && (
+                {phase === "winner" && winners.length > 0 && (
                   <>
                     <button
                       type="button"
@@ -682,11 +786,13 @@ export default function GiveawayApp() {
                       onClick={() => {
                         setError(null);
                         setClaimStartedAt(null);
-                        alert(`${winner.displayName} marked as responded. Congrats!`);
+                        alert(
+                          `${winners.map((w) => w.displayName).join(", ")} marked as responded. Congrats!`
+                        );
                       }}
                       className="w-full rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 hover:bg-emerald-300"
                     >
-                      Winner Responded
+                      Winner{winners.length > 1 ? "s" : ""} Responded
                     </button>
                     <button
                       type="button"
@@ -722,14 +828,22 @@ export default function GiveawayApp() {
                       <dt>Eligible</dt>
                       <dd className="text-zinc-200">{audit.eligibleCount}</dd>
                     </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Winner</dt>
-                      <dd className="truncate text-zinc-200">{audit.winnerName}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Channel</dt>
-                      <dd className="truncate text-zinc-500">{audit.winnerChannelId}</dd>
-                    </div>
+                    {audit.winners.map((w, i) => (
+                      <div key={w.channelId} className="border-t border-white/5 pt-2">
+                        <div className="flex justify-between gap-2">
+                          <dt>Winner {i + 1}</dt>
+                          <dd className="truncate text-zinc-200">{w.name}</dd>
+                        </div>
+                        <div className="mt-1 flex justify-between gap-2">
+                          <dt>Prize</dt>
+                          <dd className="truncate text-cyan-300/90">{w.prize}</dd>
+                        </div>
+                        <div className="mt-1 flex justify-between gap-2">
+                          <dt>Channel</dt>
+                          <dd className="truncate text-zinc-500">{w.channelId}</dd>
+                        </div>
+                      </div>
+                    ))}
                     <div className="flex justify-between gap-2">
                       <dt>Drawn</dt>
                       <dd className="text-zinc-200">{formatTime(audit.drawnAt)}</dd>
@@ -763,7 +877,7 @@ export default function GiveawayApp() {
 
           {/* Live screen */}
           <main className="min-h-[70vh]">
-            {(phase === "drawing" || (phase === "winner" && winner)) && (
+            {(phase === "drawing" || (phase === "winner" && winners.length > 0)) && (
               <div className="flex min-h-[70vh] flex-col items-center justify-center rounded-3xl border border-white/10 bg-[#0c0c0e]/80 px-6 py-16 text-center animate-pulse-glow">
                 {phase === "drawing" && (
                   <div>
@@ -775,24 +889,55 @@ export default function GiveawayApp() {
                     </p>
                   </div>
                 )}
-                {phase === "winner" && winner && (
-                  <div className="animate-winner-reveal">
+                {phase === "winner" && winners.length > 0 && (
+                  <div className="animate-winner-reveal w-full max-w-4xl">
                     <p className="text-2xl font-semibold tracking-[0.2em] text-cyan-300 sm:text-3xl">
-                      🎉 WINNER 🎉
+                      {winners.length > 1 ? "🎉 WINNERS 🎉" : "🎉 WINNER 🎉"}
                     </p>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={winner.profileImageUrl || "/globe.svg"}
-                      alt={winner.displayName}
-                      className="mx-auto mt-8 h-36 w-36 rounded-full border-4 border-cyan-400/60 object-cover shadow-[0_0_60px_rgba(34,211,238,0.35)] sm:h-44 sm:w-44"
-                    />
-                    <h2 className="mt-8 text-4xl font-bold tracking-tight text-white sm:text-6xl">
-                      {winner.displayName}
-                    </h2>
-                    <p className="mt-6 text-lg text-zinc-300 sm:text-xl">
-                      You won 1 month of ChatGPT Plus or Cursor Pro
-                    </p>
-                    <p className="mt-3 text-base text-zinc-400">
+
+                    <div
+                      className={`mt-10 grid gap-8 ${
+                        winners.length === 1
+                          ? "grid-cols-1"
+                          : winners.length === 2
+                            ? "sm:grid-cols-2"
+                            : "sm:grid-cols-2 lg:grid-cols-3"
+                      }`}
+                    >
+                      {winners.map((w, i) => (
+                        <div key={w.channelId} className="flex flex-col items-center">
+                          {winners.length > 1 && (
+                            <p className="mb-3 font-mono text-xs tracking-[0.2em] text-zinc-500 uppercase">
+                              Winner {i + 1}
+                            </p>
+                          )}
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={w.profileImageUrl || "/globe.svg"}
+                            alt={w.displayName}
+                            className={`rounded-full border-4 border-cyan-400/60 object-cover shadow-[0_0_60px_rgba(34,211,238,0.35)] ${
+                              winners.length === 1
+                                ? "h-36 w-36 sm:h-44 sm:w-44"
+                                : "h-24 w-24 sm:h-28 sm:w-28"
+                            }`}
+                          />
+                          <h2
+                            className={`mt-4 font-bold tracking-tight text-white ${
+                              winners.length === 1
+                                ? "text-4xl sm:text-6xl"
+                                : "text-xl sm:text-2xl"
+                            }`}
+                          >
+                            {w.displayName}
+                          </h2>
+                          <p className="mt-3 text-sm text-zinc-300 sm:text-base">
+                            You won {w.prize}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="mt-8 text-base text-zinc-400">
                       Please type <span className="font-mono text-cyan-300">HERE</span> in
                       chat within 2 minutes to claim
                     </p>
@@ -836,11 +981,13 @@ export default function GiveawayApp() {
                         <button
                           type="button"
                           onClick={() =>
-                            alert(`${winner.displayName} marked as responded. Congrats!`)
+                            alert(
+                              `${winners.map((w) => w.displayName).join(", ")} marked as responded. Congrats!`
+                            )
                           }
                           className="rounded-xl bg-emerald-400 px-5 py-2.5 text-sm font-bold text-zinc-950"
                         >
-                          Winner Responded
+                          Winner{winners.length > 1 ? "s" : ""} Responded
                         </button>
                         <button
                           type="button"
@@ -856,7 +1003,7 @@ export default function GiveawayApp() {
               </div>
             )}
 
-            {phase !== "drawing" && !(phase === "winner" && winner) && (
+            {phase !== "drawing" && !(phase === "winner" && winners.length > 0) && (
               <div className="rounded-3xl border border-white/10 bg-[#0c0c0e]/80 p-6 sm:p-10">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
@@ -967,7 +1114,7 @@ export default function GiveawayApp() {
                       onClick={() => void pickWinner(false)}
                       className="rounded-2xl bg-emerald-400 px-10 py-4 text-lg font-bold tracking-wide text-zinc-950 transition hover:bg-emerald-300"
                     >
-                      Pick Winner
+                      {winnerCount > 1 ? `Pick ${winnerCount} Winners` : "Pick Winner"}
                     </button>
                   </div>
                 )}
