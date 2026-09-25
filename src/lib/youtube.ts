@@ -56,6 +56,19 @@ export type YoutubeApiErrorCode =
   | "API_ERROR"
   | "STREAM_ENDED";
 
+/** Prefer request header (UI paste) over .env.local */
+export function resolveYoutubeApiKey(req: {
+  headers: { get(name: string): string | null };
+}): string | null {
+  const fromHeader = req.headers.get("x-youtube-api-key")?.trim();
+  if (fromHeader) return fromHeader;
+  const fromEnv = process.env.YOUTUBE_API_KEY?.trim();
+  return fromEnv || null;
+}
+
+export const MISSING_API_KEY_MESSAGE =
+  "Paste your YouTube API key in the field on this page (or set YOUTUBE_API_KEY in .env.local).";
+
 export function mapYoutubeError(status: number, body: unknown): {
   code: YoutubeApiErrorCode;
   message: string;

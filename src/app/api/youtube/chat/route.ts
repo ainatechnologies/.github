@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { mapYoutubeError, type ChatMessage } from "@/lib/youtube";
+import {
+  mapYoutubeError,
+  MISSING_API_KEY_MESSAGE,
+  resolveYoutubeApiKey,
+  type ChatMessage,
+} from "@/lib/youtube";
 
 export async function GET(req: NextRequest) {
-  const apiKey = process.env.YOUTUBE_API_KEY?.trim();
+  const apiKey = resolveYoutubeApiKey(req);
   if (!apiKey) {
     return NextResponse.json(
       {
         error: "MISSING_API_KEY",
-        message:
-          "YOUTUBE_API_KEY is missing. Add it to .env.local in the project root and restart the server.",
+        message: MISSING_API_KEY_MESSAGE,
       },
       { status: 500 }
     );

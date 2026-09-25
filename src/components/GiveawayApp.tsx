@@ -59,8 +59,11 @@ function formatTime(iso: string): string {
   }
 }
 
+const API_KEY_STORAGE = "yt_giveaway_api_key";
+
 export default function GiveawayApp() {
   const [presenterMode, setPresenterMode] = useState(false);
+  const [apiKey, setApiKey] = useState("");
   const [url, setUrl] = useState("");
   const [keyword, setKeyword] = useState("BUILD50");
   const [durationMode, setDurationMode] = useState<DurationMode>(300);
@@ -91,15 +94,48 @@ export default function GiveawayApp() {
   const keywordRef = useRef(keyword);
   const startedAtRef = useRef<string | null>(null);
   const phaseRef = useRef<Phase>(phase);
+  const apiKeyRef = useRef(apiKey);
 
   keywordRef.current = keyword;
   startedAtRef.current = startedAt;
   phaseRef.current = phase;
+  apiKeyRef.current = apiKey;
+
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(API_KEY_STORAGE);
+      if (saved) setApiKey(saved);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (apiKey.trim()) sessionStorage.setItem(API_KEY_STORAGE, apiKey.trim());
+      else sessionStorage.removeItem(API_KEY_STORAGE);
+    } catch {
+      /* ignore */
+    }
+  }, [apiKey]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(t);
   }, []);
+
+  function youtubeHeaders(extra?: HeadersInit): HeadersInit {
+    const headers: Record<string, string> = {};
+    if (extra) {
+      const h = new Headers(extra);
+      h.forEach((v, k) => {
+        headers[k] = v;
+      });
+    }
+    const key = apiKeyRef.current.trim();
+    if (key) headers["x-youtube-api-key"] = key;
+    return headers;
+  }
 
   const stopPolling = useCallback(() => {
     pollingRef.current = false;
@@ -147,7 +183,9 @@ export default function GiveawayApp() {
         const params = new URLSearchParams({ liveChatId });
         if (pageTokenRef.current) params.set("pageToken", pageTokenRef.current);
 
-        const res = await fetch(`/api/youtube/chat?${params.toString()}`);
+        const res = await fetch(`/api/youtube/chat?${params.toString()}`, {
+          headers: youtubeHeaders(),
+        });
         const data = await res.json();
 
         if (!res.ok) {
@@ -241,12 +279,16 @@ export default function GiveawayApp() {
   }, [frozenEntrants, entrants, previousWinners, winner]);
 
   async function connectStream() {
+    if (!apiKey.trim()) {
+      setError("Paste your YouTube API key in the field above first.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const res = await fetch("/api/youtube/connect", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: youtubeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ url }),
       });
       const data = await res.json();
@@ -499,6 +541,32 @@ export default function GiveawayApp() {
           {/* Controls */}
           {!presenterMode && (
             <aside className="space-y-4">
+              <section className="rounded-2xl border border-cyan-400/20 bg-[#111114]/90 p-5">
+                <h2 className="mb-1 text-xs font-semibold tracking-[0.2em] text-cyan-400/80 uppercase">
+                  YouTube API Key
+                </h2>
+                <p className="mb-3 text-xs text-zinc-500">
+                  Paste your key here. It stays in this browser session only and is sent to
+                  your local server — never shown on the presenter screen.
+                </p>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="AIza…"
+                  className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 font-mono text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-cyan-400/50"
+                />
+                {apiKey.trim() ? (
+                  <p className="mt-2 text-xs text-emerald-400/90">Key saved for this session</p>
+                ) : (
+                  <p className="mt-2 text-xs text-amber-300/80">
+                    Required before connecting to a stream
+                  </p>
+                )}
+              </section>
+
               <section className="rounded-2xl border border-white/10 bg-[#111114]/90 p-5">
                 <h2 className="mb-3 text-xs font-semibold tracking-[0.2em] text-zinc-500 uppercase">
                   YouTube Livestream
@@ -513,7 +581,7 @@ export default function GiveawayApp() {
                 <button
                   type="button"
                   onClick={connectStream}
-                  disabled={busy || !url.trim() || phase === "open" || phase === "drawing"}
+                  disabled={busy || !url.trim() || !apiKey.trim() || phase === "open" || phase === "drawing"}
                   className="mt-3 w-full rounded-xl bg-zinc-100 px-4 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {busy ? "Connecting…" : "Connect to Stream"}
