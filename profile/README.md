@@ -1,9 +1,11 @@
 # AINA Technologies
 
-AINA Technologies LLC builds AI-native products and infrastructure focused on making advanced AI systems more useful and interoperable.
+AINA Technologies LLC (Colorado) builds tools that make AI more honest and useful. · [ainatechnologies.llc](https://ainatechnologies.llc)
 
-Our primary product is **Shft**, a model-agnostic AI workspace.
+### Got Capped: [gotcapped.com](https://www.gotcapped.com)
+See what your AI subscription actually gives you, in API dollars per full usage bar, week by week. A free, open-source menu bar app (Mac first) plus `npx gotcapped`. Numbers only, never prompts. Code: [ainatechnologies/gotcapped](https://github.com/ainatechnologies/gotcapped)
 
-Our open-source interests include model interoperability, AI infrastructure, agent systems, MCP and developer tooling. We're beginning with focused contributions to existing projects and evaluating tools we can maintain usefully over time.
+### Shft: [meetshft.com](https://meetshft.com)
+Our model-agnostic AI workspace.
 
-Founded by [Ali Sher](https://github.com/sahiinthehood).
+Founded by [Ali Sher](https://github.com/sahiinthehood) · [LinkedIn](https://www.linkedin.com/company/ainatechnologies)
